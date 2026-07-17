@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vivek's T-Shirt Shop</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; background:#fafafa; }
+  h1 { text-align:center; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:20px; margin-top:24px; }
+  .card { background:#fff; border-radius:10px; padding:14px; box-shadow:0 1px 4px rgba(0,0,0,0.1); }
+  .card img { width:100%; border-radius:6px; }
+  .price { font-weight:600; margin-top:6px; }
+  #status { text-align:center; color:#666; font-size:0.85rem; }
+</style>
+</head>
+<body>
+  <h1>Vivek's T-Shirt Shop</h1>
+  <p id="status">Loading products...</p>
+  <div class="grid" id="products"></div>
+
+<script>
+// Calls api.vivekbutola.in directly - a separate subdomain/container per architecture
+const API_BASE = 'https://api.vivekbutola.in';
+
+async function loadProducts() {
+  try {
+    const res = await fetch(`${API_BASE}/products`);
+    const products = await res.json();
+    const grid = document.getElementById('products');
+    document.getElementById('status').textContent = products.length ? '' : 'No products available right now.';
+    grid.innerHTML = products.map(p => `
+      <div class="card">
+        <img src="${p.image_url}" alt="${p.name}">
+        <h3>${p.name}</h3>
+        <p>${p.description || ''}</p>
+        <div class="price">₹${p.price_inr}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('status').textContent = 'Could not load products. Please try again later.';
+  }
+}
+
+loadProducts();
+</script>
+</body>
+</html>
