@@ -21,8 +21,11 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sonarqube-server') {
-                    sh "sonar-scanner -Dsonar.projectKey=tshirt-shop-frontend -Dsonar.sources=./public"
+                script {
+                    def scannerHome = tool 'sonar-scanner'
+                    withSonarQubeEnv('sonarqube-server') {
+                        sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=tshirt-shop-frontend -Dsonar.sources=./public"
+                    }
                 }
             }
         }
