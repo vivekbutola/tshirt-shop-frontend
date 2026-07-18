@@ -10,7 +10,7 @@ pipeline {
         DOCKERHUB_NAMESPACE = 'devivek'   // your actual Docker Hub namespace
         IMAGE = "${DOCKERHUB_NAMESPACE}/tshirt-shop-${SERVICE_NAME}"
         IMAGE_TAG = "${env.GIT_COMMIT.take(7)}"
-        EC2_HOST = 'ubuntu@your-ec2-public-ip'   // <-- fill in your real EC2 public IP
+        EC2_HOST = 'ubuntu@13.233.134.33'   // production EC2
     }
 
     stages {
