@@ -1,49 +1,43 @@
+// Place this file at the ROOT of the tshirt-shop-frontend repo, replacing
+// whatever is there now. This repo IS the service - so docker build context
+// is "." not "./frontend" (that only applied to the old single-repo layout).
+
 pipeline {
     agent any
 
     environment {
-        DOCKERHUB_NAMESPACE = 'your_dockerhub_username'
+        SERVICE_NAME = 'frontend'
+        DOCKERHUB_NAMESPACE = 'devivek'   // your actual Docker Hub namespace
+        IMAGE = "${DOCKERHUB_NAMESPACE}/tshirt-shop-${SERVICE_NAME}"
         IMAGE_TAG = "${env.GIT_COMMIT.take(7)}"
-        EC2_HOST = 'ec2-user@your-ec2-public-ip'   // adjust user for your AMI (ubuntu/ec2-user)
+        EC2_HOST = 'ubuntu@your-ec2-public-ip'   // <-- fill in your real EC2 public IP
     }
 
     stages {
 
         stage('Checkout') {
-            steps {
-                checkout scm
-            }
+            steps { checkout scm }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sonarqube-server') { // name configured in Jenkins > System
-                    sh '''
-                        sonar-scanner \
-                          -Dsonar.projectKey=tshirt-shop \
-                          -Dsonar.sources=./api/src,./admin/src,./frontend/public
-                    '''
+                withSonarQubeEnv('sonarqube-server') {
+                    sh "sonar-scanner -Dsonar.projectKey=tshirt-shop-frontend -Dsonar.sources=./public"
                 }
             }
         }
 
         stage('Quality Gate') {
             steps {
-                // Fails the build if SonarQube quality gate fails - don't skip this,
-                // a scan nobody enforces is just noise
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('Build Images') {
+        stage('Build Image') {
             steps {
-                sh '''
-                    docker build -t $DOCKERHUB_NAMESPACE/tshirt-shop-frontend:$IMAGE_TAG -t $DOCKERHUB_NAMESPACE/tshirt-shop-frontend:latest ./frontend
-                    docker build -t $DOCKERHUB_NAMESPACE/tshirt-shop-api:$IMAGE_TAG -t $DOCKERHUB_NAMESPACE/tshirt-shop-api:latest ./api
-                    docker build -t $DOCKERHUB_NAMESPACE/tshirt-shop-admin:$IMAGE_TAG -t $DOCKERHUB_NAMESPACE/tshirt-shop-admin:latest ./admin
-                '''
+                sh "docker build -t ${IMAGE}:${IMAGE_TAG} -t ${IMAGE}:latest ."
             }
         }
 
@@ -52,29 +46,63 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
                     sh '''
                         echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-                        docker push $DOCKERHUB_NAMESPACE/tshirt-shop-frontend:$IMAGE_TAG
-                        docker push $DOCKERHUB_NAMESPACE/tshirt-shop-frontend:latest
-                        docker push $DOCKERHUB_NAMESPACE/tshirt-shop-api:$IMAGE_TAG
-                        docker push $DOCKERHUB_NAMESPACE/tshirt-shop-api:latest
-                        docker push $DOCKERHUB_NAMESPACE/tshirt-shop-admin:$IMAGE_TAG
-                        docker push $DOCKERHUB_NAMESPACE/tshirt-shop-admin:latest
+                        docker push ${IMAGE}:${IMAGE_TAG}
+                        docker push ${IMAGE}:latest
                     '''
                 }
             }
         }
 
-        stage('Deploy to EC2') {
+        // --- DEV: auto-deploys on every push to `dev` branch ---
+        stage('Deploy to Dev') {
+            when { branch 'dev' }
             steps {
-                // SSH key stored as a Jenkins credential, never in the repo.
-                // Copies compose file, updates image tag, pulls, restarts.
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        scp -o StrictHostKeyChecking=no docker-compose.prod.yml $EC2_HOST:/home/ec2-user/tshirt-shop/docker-compose.yml
-                        ssh -o StrictHostKeyChecking=no $EC2_HOST "cd /home/ec2-user/tshirt-shop && \
-                            sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=$IMAGE_TAG/' .env && \
-                            docker compose pull && \
-                            docker compose up -d && \
-                            docker image prune -f"
+                        ssh -o StrictHostKeyChecking=no $EC2_HOST "
+                          docker pull ${IMAGE}:${IMAGE_TAG} &&
+                          docker rm -f ${SERVICE_NAME}-dev || true &&
+                          docker run -d --name ${SERVICE_NAME}-dev -p 127.0.0.1:9500:80 ${IMAGE}:${IMAGE_TAG}
+                        "
+                    '''
+                }
+            }
+        }
+
+        // --- STAGING: auto-deploys on every push to `staging` branch ---
+        stage('Deploy to Staging') {
+            when { branch 'staging' }
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no $EC2_HOST "
+                          docker pull ${IMAGE}:${IMAGE_TAG} &&
+                          docker rm -f ${SERVICE_NAME}-staging || true &&
+                          docker run -d --name ${SERVICE_NAME}-staging -p 127.0.0.1:9000:80 ${IMAGE}:${IMAGE_TAG}
+                        "
+                    '''
+                }
+            }
+        }
+
+        // --- PRODUCTION: only from `main`, requires manual approval, zero-downtime blue-green ---
+        stage('Approval Gate') {
+            when { branch 'main' }
+            steps {
+                input message: "Deploy frontend:${IMAGE_TAG} to PRODUCTION?", ok: 'Deploy'
+            }
+        }
+
+        stage('Deploy to Production (blue-green)') {
+            when { branch 'main' }
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        scp -o StrictHostKeyChecking=no scripts/deploy-blue-green.sh $EC2_HOST:/home/ubuntu/tshirt-shop/deploy-blue-green.sh || true
+                        ssh -o StrictHostKeyChecking=no $EC2_HOST "
+                          chmod +x /home/ubuntu/tshirt-shop/deploy-blue-green.sh &&
+                          /home/ubuntu/tshirt-shop/deploy-blue-green.sh ${SERVICE_NAME} ${IMAGE} ${IMAGE_TAG} 8000 8001
+                        "
                     '''
                 }
             }
@@ -82,11 +110,8 @@ pipeline {
     }
 
     post {
-        failure {
-            echo 'Pipeline failed - check the stage logs above. Deploy stage never runs if build/scan/push failed.'
-        }
-        always {
-            sh 'docker logout || true'
-        }
+        failure { echo "Pipeline failed for frontend - deploy stage never ran." }
+        always  { sh 'docker logout || true' }
     }
 }
+
